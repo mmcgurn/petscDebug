@@ -70,7 +70,7 @@ int main(int argc, char **argv)
     // keep track of the total maximum particles
     PetscInt maxParticles = 0;
 
-    while (npGlobal && migration < 5) {
+    while (npGlobal) {
 
         PetscCall(DMSwarmGetLocalSize(swarmDm, &npLocal));
         PetscPrintf(PETSC_COMM_WORLD, "########################################################################\n");
