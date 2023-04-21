@@ -7,7 +7,7 @@ int main(int argc, char **argv)
     PetscCall(PetscInitialize(&argc, &argv, NULL, help));
 
     PetscInt dimensions  = 3;
-    PetscInt faces[3] = {200,200, 200};
+    PetscInt faces[3] = {100,100, 100};
     PetscReal lower[3] = {0.0, 0.0, 0.0};
     PetscReal upper[3] = {1.0, 1.0, 10.0};
     DMBoundaryType bc[3] = {DM_BOUNDARY_NONE, DM_BOUNDARY_NONE, DM_BOUNDARY_NONE};
