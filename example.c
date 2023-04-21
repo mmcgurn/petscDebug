@@ -15,6 +15,8 @@ int main(int argc, char **argv) {
     PetscCall(DMPlexCreateBoxMesh(PETSC_COMM_WORLD, dimensions, PETSC_FALSE, faces, lower, upper, bc, PETSC_TRUE, &dm));
     PetscCall(DMSetFromOptions(dm));
 
+    PetscCall(DMView(faceDm, PETSC_VIEWER_STDOUT_WORLD));
+
     PetscCall(DMDestroy(&dm));
 
     PetscFinalize();
