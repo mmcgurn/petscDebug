@@ -48,13 +48,21 @@ int main(int argc, char **argv)
     PetscCall(DMSwarmGetLocalSize(swarmDm, &np));
     for (PetscInt p = 0; p < np; ++p) {
         for (PetscInt d = 0; d < dimensions; ++d) {
-            coords[p * dimensions] = 0.5;
-            coords[p * dimensions + 1] = (upper[1] - lower[1])/particleInitSize* p + lower[1];
+            coords[p * dimensions + d] = 0.5*(upper[d] - lower[d]);
         }
+        coords[p * dimensions + 1] = (upper[1] - lower[1])/particleInitSize* p + lower[1];
         cellid[p] = 0;
     }
     PetscCall(DMSwarmRestoreField(swarmDm, DMSwarmPICField_coor, NULL, NULL, (void **)&coords));
     PetscCall(DMSwarmRestoreField(swarmDm, DMSwarmPICField_cellid, NULL, NULL, (void **)&cellid));
+
+
+
+//    Vec coordVec;
+//    PetscCall(DMSwarmCreateGlobalVectorFromField(swarmDm, DMSwarmPICField_coor, &coordVec));
+//    VecView(coordVec, PETSC_VIEWER_STDOUT_WORLD);
+//    PetscCall(DMSwarmDestroyGlobalVectorFromField(swarmDm, DMSwarmPICField_coor, &coordVec));
+
     DMSwarmMigrate(swarmDm, PETSC_TRUE);
 
     // while there are particles
@@ -62,6 +70,7 @@ int main(int argc, char **argv)
     PetscCall(DMSwarmGetSize(swarmDm, &npGlobal));
     PetscCall(DMSwarmGetLocalSize(swarmDm, &npLocal));
 
+    PetscPrintf(PETSC_COMM_WORLD, "Global Particles: %" PetscInt_FMT "\n", npGlobal);
     PetscPrintf(PETSC_COMM_WORLD, "########################################################################\n");
     PetscSynchronizedPrintf(PETSC_COMM_WORLD, "Local/Global Particles %" PetscInt_FMT "/%" PetscInt_FMT " on Rank %"  PetscInt_FMT "\n",npLocal, npGlobal, rank);
     PetscSynchronizedFlush(PETSC_COMM_WORLD, NULL);

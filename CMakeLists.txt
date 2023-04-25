@@ -56,9 +56,6 @@ endif ()
 # Set the project details
 project(petscTest VERSION 0.8.30)
 
-add_compile_options(-fsanitize=address)
-add_link_options(-fsanitize=address)
-
 # Load the Required 3rd Party Libaries
 pkg_check_modules(PETSc REQUIRED IMPORTED_TARGET GLOBAL PETSc)
 
