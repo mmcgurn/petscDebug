@@ -28,7 +28,9 @@ int main(int argc, char **argv)
     // Create a dm swarm
     DM swarmDm;
     PetscCall(DMCreate(PETSC_COMM_WORLD, &swarmDm));
+    PetscCall(DMSetFromOptions(swarmDm));
     PetscCall(DMSetType(swarmDm, DMSWARM));
+
     PetscCall(DMSetDimension(swarmDm, dimensions));
 
     PetscCall(DMSwarmSetType(swarmDm, DMSWARM_PIC));
@@ -37,7 +39,6 @@ int main(int argc, char **argv)
     PetscCall(DMSwarmFinalizeFieldRegister(swarmDm));
 
     PetscCall(DMSwarmSetLocalSizes(swarmDm, rank == 0? particleInitSize : 0, 1));
-    PetscCall(DMSetFromOptions(swarmDm));
 
     PetscReal* coords;
     PetscInt *cellid;
@@ -55,7 +56,6 @@ int main(int argc, char **argv)
     }
     PetscCall(DMSwarmRestoreField(swarmDm, DMSwarmPICField_coor, NULL, NULL, (void **)&coords));
     PetscCall(DMSwarmRestoreField(swarmDm, DMSwarmPICField_cellid, NULL, NULL, (void **)&cellid));
-
 
 
 //    Vec coordVec;

@@ -15,6 +15,9 @@ int main(int argc, char **argv) {
     PetscCall(DMPlexCreateBoxMesh(PETSC_COMM_WORLD, dimensions, PETSC_FALSE, faces, lower, upper, bc, PETSC_TRUE, &dm));
     PetscCall(DMSetFromOptions(dm));
 
+    DM_Plex *mesh;
+
+
     // create any ghost cells that are needed
     DM dmDist = NULL;
     PetscCall(DMPlexDistribute(dm, 3, NULL, &dmDist));
