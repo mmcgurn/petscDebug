@@ -55,20 +55,12 @@ project(petscTest VERSION 0.8.30)
 # Load the Required 3rd Party Libaries
 pkg_check_modules(PETSc REQUIRED IMPORTED_TARGET GLOBAL PETSc)
 
-add_executable(example example.cpp)
-target_link_libraries(example PUBLIC         PkgConfig::PETSc)
+add_executable(ex45 ex45.c)
+target_link_libraries(ex45 PUBLIC         PkgConfig::PETSc)
 
+add_executable(ex45_simplified ex45_simplified.c)
+target_link_libraries(ex45_simplified PUBLIC         PkgConfig::PETSc)
 
-set(THREADS_PREFER_PTHREAD_FLAG ON)
-find_package(Threads REQUIRED)
-include(findOpenCascade.cmake)
-
-
-#
-add_executable(particlesInDm particlesInDm.c)
-target_link_libraries(particlesInDm PUBLIC         PkgConfig::PETSc)
-
-copy_to_test_directory(cylinder.stp)
 #
 #add_executable(dmLocate dmLocate.c)
 #target_link_libraries(dmLocate PUBLIC         PkgConfig::PETSc)
@@ -124,8 +116,9 @@ if ("${APPLE}" AND (${CMAKE_C_COMPILER_ID} STREQUAL "AppleClang"))
     get_filename_component(LIBSTDCPP_PATH ${LIBSTDCPP_PATH} DIRECTORY)
 
 #    target_link_directories(particlesInDm PUBLIC ${LIBSTDCPP_PATH})
-    target_link_directories(example PUBLIC ${LIBSTDCPP_PATH})
-#    target_link_directories(dmLocate PUBLIC ${LIBSTDCPP_PATH})
+    target_link_directories(ex45 PUBLIC ${LIBSTDCPP_PATH})
+    target_link_directories(ex45_simplified PUBLIC ${LIBSTDCPP_PATH})
+    #    target_link_directories(dmLocate PUBLIC ${LIBSTDCPP_PATH})
 #    target_link_directories(petscSf PUBLIC ${LIBSTDCPP_PATH})
 #    target_link_directories(gmshVolumeCheck PUBLIC ${LIBSTDCPP_PATH})
 #target_link_directories(petscSfPlayground PUBLIC ${LIBSTDCPP_PATH})
