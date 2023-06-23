@@ -30,7 +30,7 @@ The gradient \(\frac{\partial F}{\partial \partial T/\partial t} \) for g0 - int
 
 /*
  * TODO:
- * create a box mesh so I can the dimensions
+// * create a box mesh so I can the dimensions
  * move the flags into hard code
  * figure out how to change the boundary condition
  */
@@ -101,19 +101,40 @@ essential_boundary_condition(PetscInt dim, PetscReal time, const PetscReal x[], 
 }
 
 
-static PetscErrorCode CreateMesh(MPI_Comm comm, DM *dm) {
+static PetscErrorCode CreateMesh(MPI_Comm comm,PetscOptions options,  DM *dm) {
     PetscFunctionBeginUser;
-    PetscCall(DMCreate(comm, dm));
-    PetscCall(DMSetType(*dm, DMPLEX));
+
+//    PetscCall(DMCreate(comm, dm));
+//    PetscCall(DMSetType(*dm, DMPLEX));
+//    PetscCall(PetscObjectSetOptions((PetscObject) *dm, options));
+//    PetscCall(PetscObjectSetName((PetscObject) *dm, "oneDimMesh"));
+//    PetscCall(DMSetFromOptions(*dm));
+//    PetscCall(DMViewFromOptions(*dm, NULL, "-dm_view"));
+
+
+    // This will also be used as a 1D boundary condition
+    PetscInt dim = 1;
+    DMBoundaryType boundaryTypes[1] = {DM_BOUNDARY_NONE};
+    PetscInt facesPetsc[1] = {50};
+    PetscReal lower[1] = {0.0};
+    PetscReal upper[1] = {0.1};
+
+
+    // Creeate the dm
+    PetscCall(DMPlexCreateBoxMesh(PETSC_COMM_WORLD, dim, PETSC_TRUE, facesPetsc, lower, upper, &boundaryTypes[0],
+                                  PETSC_TRUE, dm));
+    PetscCall(PetscObjectSetName((PetscObject) *dm, "oneDimMesh"));
+    PetscCall(PetscObjectSetOptions((PetscObject) *dm, options));
     PetscCall(DMSetFromOptions(*dm));
     PetscCall(DMViewFromOptions(*dm, NULL, "-dm_view"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 static PetscErrorCode SetupProblem(DM dm) {
     PetscDS ds;
     DMLabel label;
-    const PetscInt id = 1;
 
     PetscFunctionBeginUser;
     PetscCall(DMGetLabel(dm, "marker", &label));
@@ -122,10 +143,16 @@ static PetscErrorCode SetupProblem(DM dm) {
     PetscCall(PetscDSSetResidual(ds, 0, wIntegrandTestFunction, wIntegrandTestGradientFunction));
 
     // hard code a boundary condition for now
-    PetscCall(DMAddBoundary(dm, DM_BC_ESSENTIAL, "wall", label, 1, &id, 0, 0, NULL,
+    const PetscInt leftWallId = 1;
+    PetscCall(DMAddBoundary(dm, DM_BC_ESSENTIAL, "boundaryWall", label, 1, &leftWallId, 0, 0, NULL,
                             (void (*)(void)) essential_boundary_condition, NULL,
                             NULL, NULL));
 
+    // hard code a boundary condition for now
+//    const PetscInt rightWallId = 2;
+//    PetscCall(DMAddBoundary(dm, DM_BC_ESSENTIAL, "farFieldWall", label, 1, &rightWallId, 0, 0, NULL,
+//                            (void (*)(void)) essential_boundary_condition, NULL,
+//                            NULL, NULL));
 
     // Set the constant values for this problem
     PetscReal parameterArray[total] = {1000, 1, 1};
@@ -181,13 +208,31 @@ int main(int argc, char **argv) {
     DM dm;
     TS ts;
     Vec u;
-
+    PetscOptions options;
     PetscFunctionBeginUser;
     PetscCall(PetscInitialize(&argc, &argv, NULL, help));
-    PetscCall(CreateMesh(PETSC_COMM_WORLD, &dm));
+
+    // Create a petsc options and set the required options
+    PetscCall(PetscOptionsCreate(&options));
+
+    // for now, hard code the petsc options
+    PetscOptionsSetValue(options, "-ts_type", "beuler");
+    PetscOptionsSetValue(options, "-ts_max_steps", "50");
+    PetscOptionsSetValue(options, "-ts_dt", "0.1");
+    PetscOptionsSetValue(options, "-snes_error_if_not_converged", "");
+    PetscOptionsSetValue(options, "-dm_view", "hdf5:/Users/mcgurn/scratch/results/testOutput/sol.h5");
+    PetscOptionsSetValue(options, "-ts_monitor_solution", "hdf5:/Users/mcgurn/scratch/results/testOutput/sol.h5::append");
+    PetscOptionsSetValue(options, "-pc_type", "lu");
+    // Set the mesh parameters
+//    PetscOptionsSetValue(options, "-dm_plex_separate_marker", "");
+    PetscOptionsSetValue(options, "-dm_plex_dim", "1");
+    PetscOptionsSetValue(options, "-dm_plex_box_faces", "10");
+
+    PetscCall(CreateMesh(PETSC_COMM_WORLD, options, &dm));
     PetscCall(SetupDiscretization(dm));
 
     PetscCall(TSCreate(PETSC_COMM_WORLD, &ts));
+    PetscCall(PetscObjectSetOptions((PetscObject) ts, options));
     PetscCall(TSSetDM(ts, dm));
     PetscCall(DMTSSetBoundaryLocal(dm, DMPlexTSComputeBoundary, NULL));
     PetscCall(DMTSSetIFunctionLocal(dm, DMPlexTSComputeIFunctionFEM, NULL));
@@ -205,6 +250,11 @@ int main(int argc, char **argv) {
     PetscCall(VecDestroy(&u));
     PetscCall(TSDestroy(&ts));
     PetscCall(DMDestroy(&dm));
+
+    PetscCall(PetscOptionsLeft(options));
+    PetscCall(PetscOptionsDestroy(&options));
+
+
     PetscCall(PetscFinalize());
     return 0;
 }
