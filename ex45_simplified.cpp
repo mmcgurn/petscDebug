@@ -104,7 +104,6 @@ static PetscErrorCode
 EssentialCoupledWallBC(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nc, PetscScalar *u,
                        void *ctx) {
     *u = 500.0;
-    std::cout << "calling EssentialCoupledWallBC" << std::endl;
     return PETSC_SUCCESS;
 }
 
@@ -116,8 +115,6 @@ NaturalCoupledWallBC(PetscInt dim, PetscInt Nf, PetscInt NfAux, const PetscInt u
                      const PetscScalar constants[], PetscScalar f0[]) {
     // The normal is facing out, so scale the heat flux by -1
     f0[0] = -10000.0;
-    std::cout << "calling NaturalCoupledWallBC" << std::endl;
-
 }
 
 static PetscErrorCode
@@ -128,14 +125,104 @@ EssentialFarFieldWallBC(PetscInt dim, PetscReal time, const PetscReal x[], Petsc
 }
 
 
+static PetscErrorCode CreateMesh(MPI_Comm comm, PetscOptions options, DM *dm) {
+    PetscFunctionBeginUser;
+
+    PetscCall(DMCreate(comm, dm));
+    PetscCall(DMSetType(*dm, DMPLEX));
+    PetscCall(PetscObjectSetOptions((PetscObject) *dm, options));
+    PetscCall(PetscObjectSetName((PetscObject) *dm, "oneDimMesh"));
+    PetscCall(DMSetFromOptions(*dm));
+    PetscCall(DMViewFromOptions(*dm, NULL, "-dm_view"));
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode SetupDiscretization(DM dm, DMBoundaryConditionType bcType = DM_BC_NATURAL) {
+    DM cdm = dm;
+    PetscFE fe;
+    PetscInt dim;
+
+    PetscFunctionBeginUser;
+    PetscCall(DMGetDimension(dm, &dim));
+    /* Create finite element */
+    PetscCall(
+            PetscFECreateLagrange(PETSC_COMM_SELF, dim, 1, PETSC_TRUE, 1 /*degree  of space */ , PETSC_DETERMINE, &fe));
+    PetscCall(PetscObjectSetName((PetscObject) fe, "temperature"));
+    /* Set discretization and boundary conditions for each mesh */
+    PetscCall(DMSetField(dm, 0, NULL, (PetscObject) fe));
+    PetscCall(DMCreateDS(dm));
+
+    // setup the problem
+    PetscDS ds;
+    DMLabel label;
+    PetscCall(DMGetLabel(dm, "marker", &label));
+    PetscCall(DMPlexLabelComplete(dm, label));
+    PetscCall(DMGetDS(dm, &ds));
+    PetscCall(PetscDSSetJacobian(ds, 0, 0, jacobianG0Term, NULL, NULL, jacobianG3Term));
+    PetscCall(PetscDSSetResidual(ds, 0, wIntegrandTestFunction, wIntegrandTestGradientFunction));
+
+    // Add in the boundaries
+    const PetscInt leftWallId = 1;
+    switch (bcType) {
+        case DM_BC_ESSENTIAL:
+            std::cout << "switching bc to DM_BC_ESSENTIAL" << std::endl;
+            PetscCall(PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "coupledWall", label, 1, &leftWallId, 0, 0, NULL,
+                                         (void (*)()) EssentialCoupledWallBC, NULL,
+                                         NULL, &coupledWallId));
+            break;
+        case DM_BC_NATURAL:
+            std::cout << "switching bc to DM_BC_NATURAL" << std::endl;
+            PetscCall(DMAddBoundary(dm, DM_BC_NATURAL, "coupledWall", label, 1, &leftWallId, 0, 0, NULL,
+                                    NULL, NULL,
+                                    NULL, &coupledWallId));
+            PetscWeakForm wf;
+            PetscCall(PetscDSGetBoundary(ds, coupledWallId, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                                         NULL,
+                                         NULL));
+            PetscCall(PetscWeakFormSetIndexBdResidual(wf, label, leftWallId, 0, 0, 0, NaturalCoupledWallBC, 0, NULL));
+
+
+            break;
+        default:
+            throw std::invalid_argument("Unable to handle BC type");
+    }
+
+    // Add the far field BC
+    const PetscInt rightWallId = 2;
+    PetscCall(PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "farFieldWall", label, 1, &rightWallId, 0, 0, NULL,
+                                 (void (*)(void)) EssentialFarFieldWallBC, NULL,
+                                 NULL, NULL));
+
+    // Set the constant values for this problem
+    PetscReal parameterArray[total] = {1000, 1, 1};
+    PetscCall(PetscDSSetConstants(ds, total, parameterArray));
+
+    // copy over the discratation
+    PetscCall(PetscFEDestroy(&fe));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode SetInitialConditions(TS ts, Vec u) {
+    DM dm;
+    PetscReal t;
+
+    PetscFunctionBeginUser;
+    PetscCall(TSGetDM(ts, &dm));
+    PetscCall(TSGetTime(ts, &t));
+
+    // Set the initial condition
+    VecSet(u, 300.0);
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+
 PetscErrorCode UpdateBoundaryCondition(TS ts) {
     PetscFunctionBeginUser;
     DM dm;
     PetscCall(TSGetDM(ts, &dm));
 
-    // Get the solution vector to see if it should be natural or essential
-    DMLabel label;
-    PetscCall(DMGetLabel(dm, "marker", &label));
 
     // Get the current global vector
     Vec currentGlobalVec;
@@ -163,15 +250,14 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
     // cleanup
     PetscCall(VecRestoreArrayRead(locVec, &locVecArray));
 
-    VecView(locVec, PETSC_VIEWER_STDOUT_WORLD);
 
     // Now determine what kind of boundary we need
     DMBoundaryConditionType neededBcType = DM_BC_NATURAL;
-    if (temperature > 1000) {
+    if (temperature >= 500.0) {
         neededBcType = DM_BC_ESSENTIAL;
     }
 
-    // Assume that the bcId is 0 for now.
+    // Get the ds
     PetscDS ds;
     PetscCall(DMGetDS(dm, &ds));
     DMBoundaryConditionType currentBcType;
@@ -183,38 +269,26 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
     // Change the boundary if needed
     std::cout << "temperature " << temperature << std::endl;
 
-    if (currentBcType != neededBcType) {
-        const PetscInt leftWallId = 1;
-        switch (neededBcType) {
-            case DM_BC_ESSENTIAL:
-                std::cout << "switching bc to DM_BC_ESSENTIAL" << std::endl;
-                PetscCall(
-                        PetscDSUpdateBoundary(ds, coupledWallId, DM_BC_ESSENTIAL, "coupledWall", label, 1, &leftWallId, 0, 0, NULL,
-                                              (void (*)(void)) EssentialCoupledWallBC, NULL,
-                                              NULL));
-                break;
-            case DM_BC_NATURAL:
-                std::cout << "switching bc to DM_BC_NATURAL" << std::endl;
-                PetscCall(
-                        PetscDSUpdateBoundary(ds, coupledWallId, DM_BC_NATURAL, "coupledWall", label, 1, &leftWallId, 0, 0, NULL,
-                                              NULL, NULL,
-                                              NULL));
-                break;
-            default:
-                throw std::invalid_argument("Unable to handle BC type");
-        }
+    if (currentBcType != neededBcType && currentBcType != DM_BC_ESSENTIAL) {
+        // Clone the DM
+        DM newDM;
+        PetscCall(DMClone(dm, &newDM));
+
+        // Setup the new dm
+        PetscCall(SetupDiscretization(newDM, neededBcType));
 
         // Reset the TS
         PetscCall(TSReset(ts));
 
         // Create a new global vector
         Vec newGlobalVector;
-        PetscCall(DMCreateGlobalVector(dm, &newGlobalVector));
+        PetscCall(DMCreateGlobalVector(newDM, &newGlobalVector));
 
         // Map from the local vector back to the global
-        PetscCall(DMLocalToGlobal(dm, locVec, INSERT_VALUES, newGlobalVector));
+        PetscCall(DMLocalToGlobal(newDM, locVec, INSERT_VALUES, newGlobalVector));
 
         // Set in the TS
+        PetscCall(TSSetDM(ts, newDM));
         PetscCall(TSSetSolution(ts, newGlobalVector));
     }
 
@@ -225,131 +299,6 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-//PetscErrorCode Ch(TS, PetscInt, PetscReal, Vec, void *)
-
-
-
-static PetscErrorCode CreateMesh(MPI_Comm comm, PetscOptions options, DM *dm) {
-    PetscFunctionBeginUser;
-
-    PetscCall(DMCreate(comm, dm));
-    PetscCall(DMSetType(*dm, DMPLEX));
-    PetscCall(PetscObjectSetOptions((PetscObject) *dm, options));
-    PetscCall(PetscObjectSetName((PetscObject) *dm, "oneDimMesh"));
-    PetscCall(DMSetFromOptions(*dm));
-    PetscCall(DMViewFromOptions(*dm, NULL, "-dm_view"));
-
-    PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-static PetscErrorCode SetupProblem(DM dm) {
-    PetscDS ds;
-    DMLabel label;
-
-    PetscFunctionBeginUser;
-    PetscCall(DMGetLabel(dm, "marker", &label));
-    PetscCall(DMPlexLabelComplete(dm, label));
-    PetscCall(DMGetDS(dm, &ds));
-    PetscCall(PetscDSSetJacobian(ds, 0, 0, jacobianG0Term, NULL, NULL, jacobianG3Term));
-    PetscCall(PetscDSSetResidual(ds, 0, wIntegrandTestFunction, wIntegrandTestGradientFunction));
-
-    // hard code a boundary condition for now
-    const PetscInt leftWallId = 1;
-//    PetscCall(DMAddBoundary(dm, DM_BC_NATURAL, "coupledWall", label, 1, &leftWallId, 0, 0, NULL,
-//                            NULL, NULL,
-//                            NULL, &coupledWallId));
-//    PetscWeakForm wf;
-//    PetscCall(PetscDSGetBoundary(ds, coupledWallId, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-//                                 NULL));
-//    PetscCall(PetscWeakFormSetIndexBdResidual(wf, label, leftWallId, 0, 0, 0, NaturalCoupledWallBC, 0, NULL));
-
-    printf("CoupledBoundaryWall: %" PetscInt_FMT, coupledWallId);
-    // hard code a boundary condition for now
-    const PetscInt rightWallId = 2;
-    PetscCall(PetscDSAddBoundary(ds, DM_BC_ESSENTIAL, "farFieldWall", label, 1, &rightWallId, 0, 0, NULL,
-                                 (void (*)(void)) EssentialFarFieldWallBC, NULL,
-                                 NULL, NULL));
-
-    // Set the constant values for this problem
-    PetscReal parameterArray[total] = {1000, 1, 1};
-    PetscCall(PetscDSSetConstants(ds, total, parameterArray));
-
-
-    // Start out getting all the faces
-    PetscInt depth;
-    PetscCall(DMPlexGetDepth(dm, &depth));
-
-    // Get the label of points in this
-    PetscInt pStart, pEnd;
-    PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
-
-    // get the global section
-    PetscSection section;
-    PetscCall(DMGetSection(dm, &section));
-
-
-    // Determine the BC Node
-    for (PetscInt p = pStart; p < pEnd; ++p) {
-        // Get the dof here
-        PetscInt dof;
-        PetscCall(PetscSectionGetDof(section, p, &dof));
-        // Get the label here
-        PetscInt bcValue;
-        PetscCall(DMLabelGetValue(label, p, &bcValue));
-
-        if (dof && bcValue == 1) {
-            bcNodes.push_back(p);
-        }
-    }
-
-    if (bcNodes.size() != 1) {
-        throw std::invalid_argument("There should be a single bc node");
-    }
-
-
-    PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-static PetscErrorCode SetupDiscretization(DM dm) {
-    DM cdm = dm;
-    PetscFE fe;
-    PetscInt dim;
-
-    PetscFunctionBeginUser;
-    PetscCall(DMGetDimension(dm, &dim));
-    /* Create finite element */
-    PetscCall(
-            PetscFECreateLagrange(PETSC_COMM_SELF, dim, 1, PETSC_TRUE, 1 /*degree  of space */ , PETSC_DETERMINE, &fe));
-    PetscCall(PetscObjectSetName((PetscObject) fe, "temperature"));
-    /* Set discretization and boundary conditions for each mesh */
-    PetscCall(DMSetField(dm, 0, NULL, (PetscObject) fe));
-    PetscCall(DMCreateDS(dm));
-
-    // Setup the problem
-    PetscCall(SetupProblem(dm));
-
-    // copy over the discratation
-    while (cdm) {
-        PetscCall(DMCopyDisc(dm, cdm));
-        PetscCall(DMGetCoarseDM(cdm, &cdm));
-    }
-    PetscCall(PetscFEDestroy(&fe));
-    PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-static PetscErrorCode SetInitialConditions(TS ts, Vec u) {
-    DM dm;
-    PetscReal t;
-
-    PetscFunctionBeginUser;
-    PetscCall(TSGetDM(ts, &dm));
-    PetscCall(TSGetTime(ts, &t));
-
-    // Set the initial condition
-    VecSet(u, 300.0);
-
-    PetscFunctionReturn(PETSC_SUCCESS);
-}
 
 int main(int argc, char **argv) {
     DM dm;
@@ -380,6 +329,43 @@ int main(int argc, char **argv) {
     PetscCall(CreateMesh(PETSC_COMM_WORLD, options, &dm));
     PetscCall(SetupDiscretization(dm));
 
+    // determine the point that we need to apply a boundary condition
+    {
+        DMLabel label;
+        PetscCall(DMGetLabel(dm, "marker", &label));
+
+        // Start out getting all the faces
+        PetscInt depth;
+        PetscCall(DMPlexGetDepth(dm, &depth));
+
+        // Get the label of points in this
+        PetscInt pStart, pEnd;
+        PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
+
+        // get the global section
+        PetscSection section;
+        PetscCall(DMGetSection(dm, &section));
+
+
+        // Determine the BC Node
+        for (PetscInt p = pStart; p < pEnd; ++p) {
+            // Get the dof here
+            PetscInt dof;
+            PetscCall(PetscSectionGetDof(section, p, &dof));
+            // Get the label here
+            PetscInt bcValue;
+            PetscCall(DMLabelGetValue(label, p, &bcValue));
+
+            if (dof && bcValue == 1) {
+                bcNodes.push_back(p);
+            }
+        }
+
+        if (bcNodes.size() != 1) {
+            throw std::invalid_argument("There should be a single bc node");
+        }
+    }
+
     PetscCall(TSCreate(PETSC_COMM_WORLD, &ts));
     PetscCall(PetscObjectSetOptions((PetscObject) ts, options));
     PetscCall(TSSetDM(ts, dm));
@@ -394,7 +380,8 @@ int main(int argc, char **argv) {
     PetscCall(DMTSCheckFromOptions(ts, u));
     PetscCall(SetInitialConditions(ts, u));
     PetscCall(PetscObjectSetName((PetscObject) u, "temperature"));
-    PetscCall(TSSolve(ts, u));
+    PetscCall(TSSetSolution(ts, u));
+    PetscCall(TSSolve(ts, NULL));
 
     PetscCall(VecDestroy(&u));
     PetscCall(TSDestroy(&ts));
