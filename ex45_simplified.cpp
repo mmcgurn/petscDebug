@@ -5,6 +5,9 @@ static char help[] = "Simplified example for conduction";
 #include <petscts.h>
 #include <set>
 #include <iostream>
+#include "petscsf.h"
+#include <petscdt.h>
+#include <petsc/private/petscfeimpl.h>
 
 /*
 The heat transfer equation assuming constant density, specific heat and, conductivity.  There are no source/sink terms.
@@ -138,8 +141,124 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, PetscOptions options, DM *dm) {
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+struct SurfaceState {
+    //! Heat flux into the surface
+    PetscScalar heatFlux;
+
+    //! Surface temperature
+    PetscScalar temperature;
+};
+
+
+/**
+ * Return the cell containing the location xyz
+ * Inputs:
+ *  dm - The mesh
+ *  xyz - Array containing the point
+ *
+ * Outputs:
+ *  cell - The cell containing xyz. Will return -1 if this point is not in the local part of the DM
+ *
+ * Note: This is adapted from DMInterpolationSetUp. If the cell containing the point is a ghost cell then this will return -1.
+ *        If the point is in the upper corner of the domain it will not be able to find the containing cell.
+ */
+PetscErrorCode DMPlexGetContainingCell(DM dm, PetscScalar *xyz, PetscInt *cell) {
+    PetscSF cellSF = NULL;
+    Vec pointVec;
+    PetscInt dim;
+    const PetscSFNode *foundCells;
+    const PetscInt *foundPoints;
+    PetscInt numFound;
+
+    PetscFunctionBegin;
+
+    PetscCall(DMGetDimension(dm, &dim));
+
+    PetscCall(VecCreateSeqWithArray(PETSC_COMM_SELF, dim, dim, xyz, &pointVec));
+
+    PetscCall(DMLocatePoints(dm, pointVec, DM_POINTLOCATION_NONE, &cellSF));
+
+    PetscCall(PetscSFGetGraph(cellSF, NULL, &numFound, &foundPoints, &foundCells));
+
+    if (numFound == 0) {
+        *cell = -1;
+    } else {
+        *cell = foundCells[0].index;
+    }
+
+    PetscCall(PetscSFDestroy(&cellSF));
+
+    PetscCall(VecDestroy(&pointVec));
+
+    PetscFunctionReturn(0);
+}
+
+
+static PetscErrorCode ComputeSurfaceInformation(DM dm, Vec locVec, SurfaceState &surface) {
+    PetscFunctionBeginUser;
+    // Locate the cell/element that as the point of interest
+    PetscScalar coord[3] = {0.0, 0.0, 0.0};
+
+    // Find the cell that holds this point
+    PetscInt cell;
+    PetscCall(DMPlexGetContainingCell(dm, coord, &cell));
+
+    // Map that coordinate back if needed
+    PetscScalar refCoord[3];
+    PetscCall(DMPlexCoordinatesToReference(dm, cell, 1, coord, refCoord));
+
+    // Build a tabulation to compute the values there
+    PetscDS ds;
+    PetscFE fe;
+    PetscCall(DMGetDS(dm, &ds));
+    PetscCall(PetscDSGetDiscretization(ds, 0, (PetscObject *) &fe));
+    PetscInt dim;
+    PetscCall(DMGetDimension(dm, &dim));
+
+    // Get the cell geometry
+    PetscQuadrature q;
+    PetscCall(PetscFEGetQuadrature(fe, &q));
+    PetscFEGeom feGeometry;
+    PetscCall(PetscFECreateCellGeometry(fe, q, &feGeometry));
+
+    PetscTabulation tab;
+    const PetscInt nrepl = 1; // The number of replicas
+    const PetscInt nPoints = 1; // the number of points
+    const PetscInt kOrder = 1; // The number of derivatives calculated
+    PetscCall(PetscFECreateTabulation(fe, nrepl, nPoints, refCoord, kOrder, &tab));
+
+    {// compute the single point values
+        const PetscInt pointInBasis = 0;
+        // extract the local cell information
+        PetscCall(DMPlexComputeCellGeometryFEM(dm, cell, q, feGeometry.v, feGeometry.J, feGeometry.invJ,
+                                               feGeometry.detJ));
+        PetscScalar *clPhi = NULL;
+        PetscInt cSize;
+        PetscCall(DMPlexVecGetClosure(dm, NULL, locVec, cell, &cSize, &clPhi));
+
+        // Get the interpolated value
+        surface.temperature = 0.0;
+        PetscCall(PetscFEInterpolateAtPoints_Static(fe, tab, clPhi, &feGeometry, pointInBasis, &surface.temperature));
+        PetscScalar temperatureGrad[3] = {0.0, 0.0, 0.0};
+        PetscCall(PetscFEFreeInterpolateGradient_Static(fe, tab->T[1], clPhi, dim, feGeometry.invJ, NULL, pointInBasis,
+                                                        temperatureGrad));
+
+        // get the constants
+        PetscInt numConstants;
+        const PetscScalar *constants;
+        PetscCall(PetscDSGetConstants(ds, &numConstants, &constants));
+        surface.heatFlux = -temperatureGrad[0]*constants[conductivity];
+    }
+
+
+    // cleanup
+    PetscCall(PetscFEDestroyCellGeometry(fe, &feGeometry));
+    PetscCall(PetscTabulationDestroy(&tab));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+
 static PetscErrorCode SetupDiscretization(DM dm, DMBoundaryConditionType bcType = DM_BC_NATURAL) {
-    DM cdm = dm;
     PetscFE fe;
     PetscInt dim;
 
@@ -238,22 +357,17 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
     PetscCall(DMPlexInsertBoundaryValues(dm, PETSC_TRUE, locVec, time, nullptr, nullptr, nullptr));
     PetscCall(DMGlobalToLocal(dm, currentGlobalVec, INSERT_VALUES, locVec));
 
+    // Get the surface temperature and heat flux
+    SurfaceState surface;
+    PetscCall(ComputeSurfaceInformation(dm, locVec, surface));
+
     // Get the array
     const PetscScalar *locVecArray;
     PetscCall(VecGetArrayRead(locVec, &locVecArray));
 
-    // Get the array
-    const PetscScalar *temperaturePointer;
-    PetscCall(DMPlexPointLocalFieldRead(dm, bcNodes.front(), 0, locVecArray, &temperaturePointer));
-    const PetscScalar temperature = temperaturePointer[0];
-
-    // cleanup
-    PetscCall(VecRestoreArrayRead(locVec, &locVecArray));
-
-
     // Now determine what kind of boundary we need
     DMBoundaryConditionType neededBcType = DM_BC_NATURAL;
-    if (temperature >= 500.0) {
+    if (surface.temperature >= 500.0) {
         neededBcType = DM_BC_ESSENTIAL;
     }
 
@@ -267,7 +381,7 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
             PetscDSGetBoundary(ds, coupledWallId, NULL, &currentBcType, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                                NULL, NULL));
     // Change the boundary if needed
-    std::cout << "temperature " << temperature << std::endl;
+    std::cout << "temperature/hf " << surface.temperature << " --- " << surface.heatFlux << std::endl;
 
     if (currentBcType != neededBcType && currentBcType != DM_BC_ESSENTIAL) {
         // Clone the DM
@@ -284,6 +398,11 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
         Vec newGlobalVector;
         PetscCall(DMCreateGlobalVector(newDM, &newGlobalVector));
 
+        // Copy the name
+        const char* name;
+        PetscCall(PetscObjectGetName((PetscObject)currentGlobalVec, &name));
+        PetscCall(PetscObjectSetName((PetscObject)newGlobalVector, name));
+
         // Map from the local vector back to the global
         PetscCall(DMLocalToGlobal(newDM, locVec, INSERT_VALUES, newGlobalVector));
 
@@ -292,13 +411,11 @@ PetscErrorCode UpdateBoundaryCondition(TS ts) {
         PetscCall(TSSetSolution(ts, newGlobalVector));
     }
 
-
     // Cleanup
     PetscCall(DMRestoreLocalVector(dm, &locVec));
 
     PetscFunctionReturn(PETSC_SUCCESS);
 }
-
 
 int main(int argc, char **argv) {
     DM dm;
@@ -383,7 +500,6 @@ int main(int argc, char **argv) {
     PetscCall(TSSetSolution(ts, u));
     PetscCall(TSSolve(ts, NULL));
 
-    PetscCall(VecDestroy(&u));
     PetscCall(TSDestroy(&ts));
     PetscCall(DMDestroy(&dm));
 

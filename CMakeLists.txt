@@ -64,6 +64,10 @@ target_link_libraries(ex45_simplified PUBLIC         PkgConfig::PETSc)
 add_executable(ex53 ex53.c)
 target_link_libraries(ex53 PUBLIC         PkgConfig::PETSc)
 
+add_executable(ex9 ex9.c)
+target_link_libraries(ex9 PUBLIC         PkgConfig::PETSc)
+
+
 #
 #add_executable(dmLocate dmLocate.c)
 #target_link_libraries(dmLocate PUBLIC         PkgConfig::PETSc)
@@ -122,6 +126,8 @@ if ("${APPLE}" AND (${CMAKE_C_COMPILER_ID} STREQUAL "AppleClang"))
     target_link_directories(ex45 PUBLIC ${LIBSTDCPP_PATH})
     target_link_directories(ex45_simplified PUBLIC ${LIBSTDCPP_PATH})
     target_link_directories(ex53 PUBLIC ${LIBSTDCPP_PATH})
+    target_link_directories(ex9 PUBLIC ${LIBSTDCPP_PATH})
+
 
     #    target_link_directories(dmLocate PUBLIC ${LIBSTDCPP_PATH})
 #    target_link_directories(petscSf PUBLIC ${LIBSTDCPP_PATH})
